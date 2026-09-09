@@ -5,8 +5,10 @@
 #include <ModbusMaster.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <math.h>
+#include <time.h>
 
 #define TFT_CS 10
 #define TFT_DC 9
@@ -45,6 +47,21 @@ const char *WIFI_PORTAL_NAME = "AquaNusa-Setup";
 const char *API_URL = AQUANUSA_API_URL;
 const char *DEVICE_UID = AQUANUSA_DEVICE_UID;
 const char *DEVICE_KEY = AQUANUSA_DEVICE_KEY;
+
+// GTS Root R4, trust anchor untuk sertifikat edge Cloudflare pada domain produksi.
+const char GTS_ROOT_R4[] PROGMEM = R"CERT(-----BEGIN CERTIFICATE-----
+MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD
+VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG
+A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw
+WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz
+IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi
+AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi
+QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR
+HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW
+BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D
+9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8
+p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
+-----END CERTIFICATE-----)CERT";
 
 Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
 HardwareSerial rs485(2);
@@ -129,7 +146,11 @@ bool postTelemetry(const Telemetry &d) {
   snprintf(json, sizeof(json), "{\"uid\":\"%s\",\"water_temp_c\":%.2f,\"air_temp_c\":%.2f,\"do_mg_l\":%.2f,\"ph\":%.2f,\"humidity_rh\":%.2f,\"illuminance_lux\":%.0f}", DEVICE_UID, d.waterTemp, d.airTemp, d.dissolvedOxygen, d.ph, d.humidity, d.lux);
   HTTPClient http;
   http.setTimeout(4000);
-  if (!http.begin(API_URL)) return false;
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  const bool https = strncmp(API_URL, "https://", 8) == 0;
+  if (https) secureClient.setCACert(GTS_ROOT_R4);
+  if (!(https ? http.begin(secureClient, API_URL) : http.begin(plainClient, API_URL))) return false;
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Key", DEVICE_KEY);
   const int status = http.POST(reinterpret_cast<uint8_t *>(json), strlen(json));
@@ -164,7 +185,11 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFiManager manager;
   manager.setConfigPortalTimeout(180);
-  manager.autoConnect(WIFI_PORTAL_NAME);
+  if (manager.autoConnect(WIFI_PORTAL_NAME)) {
+    configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
+    const uint32_t started = millis();
+    while (time(nullptr) < 1600000000 && millis() - started < 15000) delay(250);
+  }
 }
 
 void loop() {

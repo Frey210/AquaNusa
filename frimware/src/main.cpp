@@ -66,6 +66,8 @@ p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD
 Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
 HardwareSerial rs485(2);
 ModbusMaster phNode, doNode, envNode;
+WiFiManager wifiManager;
+bool ntpStarted = false;
 
 struct Telemetry {
   float waterTemp = NAN;
@@ -158,6 +160,14 @@ bool postTelemetry(const Telemetry &d) {
   return status >= 200 && status < 300;
 }
 
+void serviceNetwork() {
+  wifiManager.process();
+  if (WiFi.status() == WL_CONNECTED && !ntpStarted) {
+    configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
+    ntpStarted = true;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(RS485_DE_RE, OUTPUT);
@@ -183,19 +193,15 @@ void setup() {
   envNode.begin(ENV_SLAVE, rs485);
 
   WiFi.mode(WIFI_STA);
-  WiFiManager manager;
-  manager.setConfigPortalTimeout(180);
-  if (manager.autoConnect(WIFI_PORTAL_NAME)) {
-    configTime(0, 0, "time.cloudflare.com", "pool.ntp.org");
-    const uint32_t started = millis();
-    while (time(nullptr) < 1600000000 && millis() - started < 15000) delay(250);
-  }
+  wifiManager.setConfigPortalBlocking(false);
+  wifiManager.autoConnect(WIFI_PORTAL_NAME);
 }
 
 void loop() {
   static Telemetry data;
   static uint32_t lastSample = 0, lastPost = 0;
   const uint32_t now = millis();
+  serviceNetwork();
   if (now - lastSample >= SAMPLE_MS) {
     lastSample = now;
     float ph = NAN, phTemp = NAN, dissolvedOxygen = NAN, doTemp = NAN;
@@ -205,7 +211,9 @@ void loop() {
       data.waterTemp = doTemp + WATER_TEMP_OFFSET;
     } else if (isfinite(phTemp)) data.waterTemp = phTemp + WATER_TEMP_OFFSET;
     readEnvironment(data);
-    drawDashboard(data, WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE");
+    const char *network = WiFi.status() == WL_CONNECTED ? "ONLINE" :
+                          (wifiManager.getConfigPortalActive() ? "WIFI SETUP" : "OFFLINE");
+    drawDashboard(data, network);
   }
   if (now - lastPost >= POST_MS) {
     lastPost = now;

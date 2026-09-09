@@ -1,4 +1,4 @@
-const CACHE = "aquanusa-v1";
+const CACHE = "aquanusa-v2";
 const SHELL = ["/", "/logo.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))));

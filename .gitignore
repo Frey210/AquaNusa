@@ -3,6 +3,7 @@ deployment_secret.md
 deployment/_secret.md
 deployment/.env
 deployment/.known_hosts
+credentials/
 *.db
 __pycache__/
 .pytest_cache/
@@ -13,6 +14,7 @@ dist/
 .pio/
 .platformio-core/
 .vscode/
+.playwright-cli/
 tmp/
 backend/firebase/*.json
 frontend/firebase/

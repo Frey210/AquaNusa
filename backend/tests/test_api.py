@@ -1,4 +1,5 @@
 import importlib
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -38,6 +39,12 @@ def test_auth_roles_and_device_access(tmp_path, monkeypatch):
         assert user.get("/api/v1/devices/AQUANUSA-002/thresholds").status_code == 403
         assert user.get("/api/v1/devices/AQUANUSA-002/export.csv").status_code == 403
 
+        now = datetime.now(timezone.utc)
+        period = {"start": (now - timedelta(minutes=5)).isoformat(), "end": (now + timedelta(minutes=5)).isoformat()}
+        assert len(user.get("/api/v1/devices/AQUANUSA-001/history", params=period).json()) == 1
+        assert user.get("/api/v1/devices/AQUANUSA-001/history", params={"start": period["end"], "end": period["start"]}).status_code == 422
+        assert user.get("/api/v1/devices/AQUANUSA-001/history", params={"start": period["start"]}).status_code == 422
+
         high_ph = {**payload, "uid": "AQUANUSA-001", "ph": 8.0}
         for _ in range(2):
             assert user.post("/api/v1/telemetry", json=high_ph, headers={"X-Device-Key": "test-key"}).status_code == 201
@@ -46,8 +53,9 @@ def test_auth_roles_and_device_access(tmp_path, monkeypatch):
         assert notifications[0]["created_at"].endswith("Z")
         assert user.post(f"/api/v1/notifications/{notifications[0]['id']}/read").status_code == 204
         assert user.get("/api/v1/notifications").json()[0]["read"] is True
-        exported = user.get("/api/v1/devices/AQUANUSA-001/export.csv")
+        exported = user.get("/api/v1/devices/AQUANUSA-001/export.csv", params=period)
         assert exported.status_code == 200 and "recorded_at,water_temp_c" in exported.text
+        assert len(exported.text.strip().splitlines()) == 4
         assert user.post("/api/v1/auth/logout").status_code == 204
         assert user.get("/api/v1/auth/me").status_code == 401
 

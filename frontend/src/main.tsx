@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bell, CheckCircle, ClockCounterClockwise, CloudSun, DownloadSimple, Drop, Eye,
-  EyeSlash, Gauge, Leaf, Lightbulb, LockKey, MapPin, Pulse, SignOut, Sliders,
+  EyeSlash, FunnelSimple, Gauge, Leaf, Lightbulb, LockKey, MapPin, Pulse, SignOut, Sliders,
   Thermometer, UserCircle, Waves, WifiHigh, WifiSlash,
 } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
@@ -19,6 +19,7 @@ type Key = "water_temp_c" | "air_temp_c" | "do_mg_l" | "ph" | "humidity_rh" | "i
 type View = "monitor" | "history" | "thresholds" | "notifications";
 type Threshold = Record<`${Key}_${"min" | "max"}`, number> & { device_uid: string };
 type Alert = { id: number; device_uid: string; parameter: Key; direction: "low" | "high"; value: number; threshold: number; message: string; read: boolean; created_at: string };
+type DateRange = { start: string; end: string };
 
 const metrics: { key: Key; label: string; unit: string; icon: Icon; tone: string; step: number }[] = [
   { key: "water_temp_c", label: "Suhu air", unit: "°C", icon: Waves, tone: "cyan", step: .1 },
@@ -40,6 +41,9 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 const formatDate = (value: string) => new Intl.DateTimeFormat("id-ID", { dateStyle: "medium", timeStyle: "medium" }).format(new Date(value));
 const formatValue = (value: number, key: Key) => value.toLocaleString("id-ID", { maximumFractionDigits: key === "illuminance_lux" ? 0 : 1 });
+const toDateTimeLocal = (date: Date) => new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+const recentRange = (hours: number): DateRange => { const end = new Date(Math.ceil(Date.now() / 60_000) * 60_000); return { start: toDateTimeLocal(new Date(end.getTime() - hours * 3_600_000)), end: toDateTimeLocal(end) }; };
+const DEFAULT_RANGE = recentRange(24);
 
 function Sparkline({ data, field }: { data: Reading[]; field: Key }) {
   if (data.length < 2) return <div className="chart-empty">Belum cukup data tren</div>;
@@ -69,7 +73,8 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
 function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [view, setView] = useState<View>("monitor"), [devices, setDevices] = useState<Device[]>([]);
   const [selected, setSelected] = useState(""), [history, setHistory] = useState<Reading[]>([]);
-  const [hours, setHours] = useState(24), [threshold, setThreshold] = useState<Threshold | null>(null);
+  const [range, setRange] = useState(DEFAULT_RANGE), [draftRange, setDraftRange] = useState(DEFAULT_RANGE), [preset, setPreset] = useState("24");
+  const [threshold, setThreshold] = useState<Threshold | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]), [message, setMessage] = useState(""), [error, setError] = useState("");
   const [pushEnabled, setPushEnabled] = useState(typeof Notification !== "undefined" && Notification.permission === "granted");
 
@@ -79,13 +84,16 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     setDevices(data); setSelected((current) => data.some((item) => item.uid === current) ? current : data[0]?.uid || ""); setError("");
   }).catch((reason: Error) => setError(reason.message)), []);
   const loadAlerts = useCallback(() => api<Alert[]>("/api/v1/notifications?limit=500").then(setAlerts).catch((reason: Error) => setError(reason.message)), []);
+  const rangeParams = useMemo(() => new URLSearchParams({ start: new Date(range.start).toISOString(), end: new Date(range.end).toISOString() }).toString(), [range]);
 
   useEffect(() => { loadDevices(); loadAlerts(); const timer = window.setInterval(() => { loadDevices(); loadAlerts(); }, 15_000); return () => window.clearInterval(timer); }, [loadDevices, loadAlerts]);
   useEffect(() => {
     if (!selected) { setHistory([]); setThreshold(null); return; }
-    const load = () => api<Reading[]>(`/api/v1/devices/${encodeURIComponent(selected)}/history?hours=${hours}&limit=5000`).then(setHistory).catch((reason: Error) => setError(reason.message));
+    if (view !== "monitor" && view !== "history") return;
+    const query = view === "history" ? `${rangeParams}&limit=5000` : "hours=24&limit=5000";
+    const load = () => api<Reading[]>(`/api/v1/devices/${encodeURIComponent(selected)}/history?${query}`).then(setHistory).catch((reason: Error) => setError(reason.message));
     load(); const timer = window.setInterval(load, 15_000); return () => window.clearInterval(timer);
-  }, [selected, hours]);
+  }, [selected, view, rangeParams]);
   useEffect(() => { if (selected) api<Threshold>(`/api/v1/devices/${encodeURIComponent(selected)}/thresholds`).then(setThreshold).catch((reason: Error) => setError(reason.message)); }, [selected]);
 
   const device = devices.find((item) => item.uid === selected), latest = device?.latest;
@@ -99,9 +107,17 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     try { setThreshold(await api<Threshold>(`/api/v1/devices/${encodeURIComponent(selected)}/thresholds`, { method: "PUT", body: JSON.stringify(payload) })); setMessage("Ambang batas tersimpan."); setError(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Gagal menyimpan ambang batas"); }
   }
+  function selectPreset(hours: number) {
+    const next = recentRange(hours); setPreset(String(hours)); setDraftRange(next); setRange(next); setError("");
+  }
+  function applyRange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (new Date(draftRange.start) >= new Date(draftRange.end)) return setError("Tanggal mulai harus lebih awal dari tanggal selesai.");
+    setRange(draftRange); setError("");
+  }
   async function exportCsv() {
     if (!selected) return;
-    const response = await fetch(`/api/v1/devices/${encodeURIComponent(selected)}/export.csv?hours=${hours}`, { credentials: "same-origin" });
+    const response = await fetch(`/api/v1/devices/${encodeURIComponent(selected)}/export.csv?${rangeParams}`, { credentials: "same-origin" });
     if (!response.ok) return setError("Gagal mengekspor data");
     const url = URL.createObjectURL(await response.blob()), link = document.createElement("a");
     link.href = url; link.download = `aquanusa-${selected}.csv`; link.click(); URL.revokeObjectURL(url);
@@ -130,7 +146,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     <main><header><div><p className="eyebrow">{user.role === "admin" ? "Portal Administrator" : "Portal Pengguna"}</p><h1>{titles[view]}</h1></div>{view !== "notifications" && <label className="device-select"><span>Perangkat</span><select value={selected} onChange={(event) => setSelected(event.target.value)} disabled={devices.length < 2}>{devices.map((item) => <option key={item.uid} value={item.uid}>{item.name || item.uid}</option>)}</select></label>}</header>
       {error && <div className="notice" role="alert"><WifiSlash size={20} aria-hidden="true" />{error}</div>}{message && <div className="success" role="status"><CheckCircle size={20} aria-hidden="true" />{message}</div>}
       {view === "monitor" && (!latest ? <Empty hasDevice={devices.length > 0} admin={user.role === "admin"} /> : <><section className="status-strip" aria-label="Ringkasan status"><div className={`live ${device?.online ? "online" : "offline"}`}>{device?.online ? <WifiHigh size={20} aria-hidden="true" /> : <WifiSlash size={20} aria-hidden="true" />}<span><strong>{device?.online ? "Perangkat online" : "Perangkat offline"}</strong>Terakhir diperbarui {lastUpdate}</span></div><div><MapPin size={20} aria-hidden="true" /><span><strong>{device?.name || device?.uid}</strong>Unit pemantauan aktif</span></div><div className={healthy ? "quality-good" : "quality-watch"}><Leaf size={20} aria-hidden="true" /><span><strong>{healthy ? "Kondisi stabil" : "Perlu perhatian"}</strong>Berdasarkan ambang pH dan DO</span></div></section><section className="metric-grid" aria-label="Pembacaan sensor terkini">{metrics.map(({ key, label, unit, icon: MetricIcon, tone }) => <article className={`metric-card ${tone}`} key={key}><div className="metric-head"><span>{label}</span><MetricIcon size={22} aria-hidden="true" /></div><div className="metric-value">{formatValue(latest[key], key)}<small>{unit}</small></div><Sparkline data={history} field={key} /></article>)}</section><section className="insight"><div><p className="eyebrow">Ringkasan 24 jam</p><h2>Air memberi sinyal. AquaNusa membuatnya terbaca.</h2><p>Grafik kecil pada setiap kartu merangkum pembacaan terakhir tanpa membebani koneksi seluler.</p></div><div className="insight-stat"><span>{history.length}</span><small>sampel tersimpan</small></div></section></>)}
-      {view === "history" && <section className="panel"><div className="panel-tools"><label>Rentang data<select value={hours} onChange={(event) => setHours(Number(event.target.value))}><option value={24}>24 jam</option><option value={72}>3 hari</option><option value={168}>7 hari</option></select></label><button className="primary" onClick={exportCsv} disabled={!history.length}><DownloadSimple size={20} /> Ekspor CSV</button></div><p className="panel-caption">{history.length} pembacaan · data terbaru ditampilkan lebih dahulu</p><div className="table-wrap"><table><thead><tr><th>Waktu</th>{metrics.map((metric) => <th key={metric.key}>{metric.label}<small>{metric.unit}</small></th>)}</tr></thead><tbody>{[...history].reverse().map((row) => <tr key={row.id}><td>{formatDate(row.recorded_at)}</td>{metrics.map((metric) => <td key={metric.key}>{formatValue(row[metric.key], metric.key)}</td>)}</tr>)}</tbody></table>{!history.length && <p className="empty-row">Belum ada data pada rentang ini.</p>}</div></section>}
+      {view === "history" && <section className="panel"><form className="history-filter" onSubmit={applyRange}><div className="filter-intro"><FunnelSimple size={24} aria-hidden="true" /><span><strong>Filter periode data</strong><small id="range-help">Pilih waktu spesifik sesuai zona waktu perangkat Anda.</small></span></div><div className="filter-fields"><label htmlFor="range-preset">Rentang cepat<select id="range-preset" value={preset} onChange={(event) => event.target.value !== "custom" && selectPreset(Number(event.target.value))}><option value="24">24 jam terakhir</option><option value="72">3 hari terakhir</option><option value="168">7 hari terakhir</option><option value="custom">Periode kustom</option></select></label><label htmlFor="range-start">Mulai<input id="range-start" type="datetime-local" value={draftRange.start} max={draftRange.end} aria-describedby="range-help" onChange={(event) => { setPreset("custom"); setDraftRange({ ...draftRange, start: event.target.value }); }} required /></label><label htmlFor="range-end">Selesai<input id="range-end" type="datetime-local" value={draftRange.end} min={draftRange.start} aria-describedby="range-help" onChange={(event) => { setPreset("custom"); setDraftRange({ ...draftRange, end: event.target.value }); }} required /></label></div><div className="filter-actions"><button className="primary" type="submit"><FunnelSimple size={20} aria-hidden="true" /> Terapkan filter</button><button className="secondary" type="button" onClick={exportCsv} disabled={!history.length}><DownloadSimple size={20} aria-hidden="true" /> Download CSV</button></div></form><p className="panel-caption">{history.length} pembacaan · {formatDate(range.start)}–{formatDate(range.end)} · data terbaru ditampilkan lebih dahulu</p><div className="table-wrap"><table><thead><tr><th>Waktu</th>{metrics.map((metric) => <th key={metric.key}>{metric.label}<small>{metric.unit}</small></th>)}</tr></thead><tbody>{[...history].reverse().map((row) => <tr key={row.id}><td>{formatDate(row.recorded_at)}</td>{metrics.map((metric) => <td key={metric.key}>{formatValue(row[metric.key], metric.key)}</td>)}</tr>)}</tbody></table>{!history.length && <p className="empty-row">Belum ada data pada periode ini.</p>}</div></section>}
       {view === "thresholds" && <section className="panel"><p className="panel-caption">Notifikasi dibuat saat nilai pertama kali melewati batas dan aktif kembali setelah kondisi normal.</p>{threshold && <form className="threshold-form" onSubmit={saveThreshold}>{metrics.map(({ key, label, unit, icon: MetricIcon, step }) => <fieldset key={key}><legend><MetricIcon size={21} aria-hidden="true" />{label} <small>{unit}</small></legend><label>Minimum<input type="number" step={step} value={threshold[`${key}_min`]} onChange={(event) => setThreshold({ ...threshold, [`${key}_min`]: Number(event.target.value) })} required /></label><label>Maksimum<input type="number" step={step} value={threshold[`${key}_max`]} onChange={(event) => setThreshold({ ...threshold, [`${key}_max`]: Number(event.target.value) })} required /></label></fieldset>)}<button className="primary save" type="submit"><CheckCircle size={20} /> Simpan ambang batas</button></form>}</section>}
       {view === "notifications" && <section className="panel"><div className="panel-tools"><p className="panel-caption">{unread} belum dibaca · {alerts.length} notifikasi terakhir</p><div className="tool-actions"><button className="secondary" onClick={enablePush} disabled={pushEnabled}><Bell size={20} /> {pushEnabled ? "Push aktif" : "Aktifkan push"}</button><button className="secondary" onClick={() => markRead()} disabled={!unread}><CheckCircle size={20} /> Tandai semua dibaca</button></div></div><div className="alert-list">{alerts.map((alert) => <article key={alert.id} className={alert.read ? "read" : ""}><span className={`alert-mark ${alert.direction}`}><Bell size={20} aria-hidden="true" /></span><div><strong>{alert.device_uid} · {metrics.find((metric) => metric.key === alert.parameter)?.label || alert.parameter}</strong><p>{alert.message}</p><small>{formatDate(alert.created_at)}</small></div>{!alert.read && <button onClick={() => markRead(alert.id)}>Tandai dibaca</button>}</article>)}{!alerts.length && <p className="empty-row">Belum ada notifikasi sensor.</p>}</div></section>}
       <footer>© {new Date().getFullYear()} AquaNusa · Aerasea</footer>

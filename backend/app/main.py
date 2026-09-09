@@ -439,21 +439,34 @@ def list_devices(db: Annotated[Session, Depends(get_db)], user: Annotated[User, 
     return result
 
 
-@app.get("/api/v1/devices/{uid}/history", response_model=list[ReadingOut])
-def device_history(uid: str, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(get_current_user)], hours: Annotated[int, Query(ge=1, le=168)] = 24, limit: Annotated[int, Query(ge=1, le=5000)] = 500):
-    if not db.get(Device, uid):
-        raise HTTPException(404, "Device not found")
-    if not can_access_device(db, user, uid):
-        raise HTTPException(403, "Device access denied")
-    readings = db.scalars(select(Reading).where(Reading.device_uid == uid, Reading.recorded_at >= datetime.now(timezone.utc) - timedelta(hours=hours)).order_by(Reading.recorded_at).limit(limit)).all()
-    return [reading_out(uid, reading) for reading in readings]
-
-
 def require_device_access(db: Session, user: User, uid: str):
     if not db.get(Device, uid):
         raise HTTPException(404, "Device not found")
     if not can_access_device(db, user, uid):
         raise HTTPException(403, "Device access denied")
+
+
+def history_rows(db: Session, uid: str, hours: int, start: datetime | None, end: datetime | None, limit: int | None = None):
+    if (start is None) != (end is None):
+        raise HTTPException(422, "Tanggal mulai dan selesai harus diisi bersama")
+    if start is None:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
+    else:
+        start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start.astimezone(timezone.utc)
+        end = end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end.astimezone(timezone.utc)
+        if start >= end:
+            raise HTTPException(422, "Tanggal mulai harus lebih awal dari tanggal selesai")
+    query = select(Reading).where(Reading.device_uid == uid, Reading.recorded_at >= start, Reading.recorded_at <= end)
+    if limit:
+        return list(reversed(db.scalars(query.order_by(desc(Reading.recorded_at)).limit(limit)).all()))
+    return db.scalars(query.order_by(Reading.recorded_at)).all()
+
+
+@app.get("/api/v1/devices/{uid}/history", response_model=list[ReadingOut])
+def device_history(uid: str, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(get_current_user)], hours: Annotated[int, Query(ge=1, le=168)] = 24, start: datetime | None = None, end: datetime | None = None, limit: Annotated[int, Query(ge=1, le=5000)] = 500):
+    require_device_access(db, user, uid)
+    return [reading_out(uid, reading) for reading in history_rows(db, uid, hours, start, end, limit)]
 
 
 @app.get("/api/v1/devices/{uid}/thresholds", response_model=ThresholdOut)
@@ -476,16 +489,16 @@ def update_device_thresholds(uid: str, payload: ThresholdIn, db: Annotated[Sessi
 
 
 @app.get("/api/v1/devices/{uid}/export.csv")
-def export_device_history(uid: str, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(get_current_user)], hours: Annotated[int, Query(ge=1, le=168)] = 24):
+def export_device_history(uid: str, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(get_current_user)], hours: Annotated[int, Query(ge=1, le=168)] = 24, start: datetime | None = None, end: datetime | None = None):
     require_device_access(db, user, uid)
-    rows = db.scalars(select(Reading).where(Reading.device_uid == uid, Reading.recorded_at >= datetime.now(timezone.utc) - timedelta(hours=hours)).order_by(Reading.recorded_at)).all()
+    rows = history_rows(db, uid, hours, start, end)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["recorded_at", *SENSOR_LABELS])
     for row in rows:
         recorded_at = row.recorded_at if row.recorded_at.tzinfo else row.recorded_at.replace(tzinfo=timezone.utc)
         writer.writerow([recorded_at.isoformat(), *(getattr(row, key) for key in SENSOR_LABELS)])
-    filename = f"aquanusa-{uid}-{datetime.now(timezone.utc).date()}.csv"
+    filename = f"aquanusa-{uid}-{datetime.now(timezone.utc):%Y%m%d-%H%M}.csv"
     return Response(output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 

@@ -31,10 +31,20 @@ constexpr float DO_SCALE = 1.0f, DO_OFFSET = 0.0f;
 constexpr float WATER_TEMP_OFFSET = 0.0f, AIR_TEMP_OFFSET = 0.0f;
 constexpr float HUMIDITY_OFFSET = 0.0f, LUX_SCALE = 1.0f;
 
+#ifndef AQUANUSA_API_URL
+#define AQUANUSA_API_URL "http://192.168.1.10:8000/api/v1/telemetry"
+#endif
+#ifndef AQUANUSA_DEVICE_KEY
+#define AQUANUSA_DEVICE_KEY "change-me"
+#endif
+#ifndef AQUANUSA_DEVICE_UID
+#define AQUANUSA_DEVICE_UID "AQUANUSA-001"
+#endif
+
 const char *WIFI_PORTAL_NAME = "AquaNusa-Setup";
-const char *API_URL = "http://192.168.1.10:8000/api/v1/telemetry";
-const char *DEVICE_UID = "AQUANUSA-001";
-const char *DEVICE_KEY = "change-me";
+const char *API_URL = AQUANUSA_API_URL;
+const char *DEVICE_UID = AQUANUSA_DEVICE_UID;
+const char *DEVICE_KEY = AQUANUSA_DEVICE_KEY;
 
 Adafruit_ILI9341 tft(TFT_CS, TFT_DC, TFT_RST);
 HardwareSerial rs485(2);
@@ -178,4 +188,3 @@ void loop() {
   }
   delay(20);
 }
-

@@ -1,4 +1,8 @@
 .env
+deployment_secret.md
+deployment/_secret.md
+deployment/.env
+deployment/.known_hosts
 *.db
 __pycache__/
 .pytest_cache/

@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite:////data/aquanusa.db
+      AQUANUSA_DEVICE_KEY: ${AQUANUSA_DEVICE_KEY}
+      CORS_ORIGINS: ${PUBLIC_ORIGIN}
+    volumes:
+      - aquanusa-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  aquanusa-data:
+

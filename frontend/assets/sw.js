@@ -10,7 +10,7 @@ firebase.initializeApp({
 });
 firebase.messaging();
 
-const CACHE = "aquanusa-v7";
+const CACHE = "aquanusa-v8";
 const SHELL = ["/", "/brand-mark.png", "/brand-wordmark.png", "/brand-lockup.png", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png", "/icons/icon-maskable-512.png"];
 
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))));

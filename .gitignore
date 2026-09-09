@@ -1,0 +1,17 @@
+.env
+*.db
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+*.tsbuildinfo
+.pio/
+.platformio-core/
+.vscode/
+tmp/
+backend/firebase/*.json
+frontend/firebase/
+frontend/firebaseSDK.txt
+frontend/vapidKey.txt
+frontend/Web_Push_certificates.txt

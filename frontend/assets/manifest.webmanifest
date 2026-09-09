@@ -1,0 +1,11 @@
+{
+  "name": "AquaNusa Water Intelligence",
+  "short_name": "AquaNusa",
+  "description": "Pemantauan kualitas air dan lingkungan",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#071b25",
+  "theme_color": "#071b25",
+  "icons": [{ "src": "/logo.png", "sizes": "any", "type": "image/png", "purpose": "any maskable" }]
+}
+

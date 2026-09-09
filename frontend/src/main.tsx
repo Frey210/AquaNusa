@@ -2,8 +2,8 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bell, CheckCircle, ClockCounterClockwise, CloudSun, DownloadSimple, Drop, Eye,
-  EyeSlash, FunnelSimple, Gauge, Leaf, Lightbulb, LockKey, MapPin, Pulse, SignOut, Sliders,
-  Thermometer, UserCircle, Waves, WifiHigh, WifiSlash,
+  EyeSlash, FunnelSimple, Gauge, Leaf, Lightbulb, LockKey, MapPin, Pulse, ShareNetwork,
+  SignOut, Sliders, Thermometer, UserCircle, Waves, WifiHigh, WifiSlash, X,
 } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
 import { requestPushToken } from "./firebase";
@@ -20,6 +20,7 @@ type View = "monitor" | "history" | "thresholds" | "notifications";
 type Threshold = Record<`${Key}_${"min" | "max"}`, number> & { device_uid: string };
 type Alert = { id: number; device_uid: string; parameter: Key; direction: "low" | "high"; value: number; threshold: number; message: string; read: boolean; created_at: string };
 type DateRange = { start: string; end: string };
+type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
 
 const metrics: { key: Key; label: string; unit: string; icon: Icon; tone: string; step: number }[] = [
   { key: "water_temp_c", label: "Suhu air", unit: "°C", icon: Waves, tone: "cyan", step: .1 },
@@ -158,12 +159,37 @@ function Empty({ hasDevice, admin }: { hasDevice: boolean; admin: boolean }) {
   return <section className="empty-state"><div className="empty-icon"><Waves size={38} aria-hidden="true" /></div><h2>{hasDevice ? "Menunggu data terbaru" : "Belum ada perangkat"}</h2><p>{admin ? "Device akan muncul setelah mengirim telemetri pertama." : "Hubungi administrator bila perangkat belum terhubung ke akun Anda."}</p></section>;
 }
 
+function Splash({ onDone }: { onDone: () => void }) {
+  function finish() { try { sessionStorage.setItem("aquanusa-splash-seen", "1"); } finally { onDone(); } }
+  useEffect(() => { const timer = window.setTimeout(finish, 12_000); return () => window.clearTimeout(timer); }, []);
+  return <section className="app-splash" aria-label="Pembuka AquaNusa"><video src="/splash.mp4" autoPlay muted playsInline preload="auto" aria-hidden="true" onEnded={finish} onError={finish} /><button onClick={finish}>Lewati</button></section>;
+}
+
+function InstallBanner() {
+  const standalone = window.matchMedia("(display-mode: standalone)").matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+  const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+  const [prompt, setPrompt] = useState<InstallPromptEvent | null>(null), [installed, setInstalled] = useState(standalone);
+  const [dismissed, setDismissed] = useState(false), [showHelp, setShowHelp] = useState(false);
+  useEffect(() => {
+    const ready = (event: Event) => { event.preventDefault(); setPrompt(event as InstallPromptEvent); };
+    const done = () => { setInstalled(true); setPrompt(null); };
+    window.addEventListener("beforeinstallprompt", ready); window.addEventListener("appinstalled", done);
+    return () => { window.removeEventListener("beforeinstallprompt", ready); window.removeEventListener("appinstalled", done); };
+  }, []);
+  if (installed || dismissed || (!prompt && !isiOS)) return null;
+  async function install() {
+    if (!prompt) return setShowHelp(true);
+    await prompt.prompt(); const { outcome } = await prompt.userChoice; setPrompt(null); if (outcome === "accepted") setInstalled(true);
+  }
+  return <section className="install-prompt" aria-label="Instal AquaNusa"><img src="/brand-mark.png" alt="" width="512" height="512" /><span><strong>Pasang AquaNusa</strong><small>Akses cepat dari layar utama.</small></span><button className="install-action" onClick={install}><DownloadSimple size={19} aria-hidden="true" />Pasang</button><button className="install-close" onClick={() => setDismissed(true)} aria-label="Tutup ajakan instal"><X size={19} aria-hidden="true" /></button>{showHelp && <p className="install-help" role="status"><ShareNetwork size={19} aria-hidden="true" />Ketuk menu Bagikan, lalu pilih <strong>Tambahkan ke Layar Utama</strong>.</p>}</section>;
+}
+
 function App() {
   const [user, setUser] = useState<User | null>(null), [checking, setChecking] = useState(true);
+  const [showSplash, setShowSplash] = useState(() => window.matchMedia("(display-mode: standalone)").matches && !window.matchMedia("(prefers-reduced-motion: reduce)").matches && sessionStorage.getItem("aquanusa-splash-seen") !== "1");
   useEffect(() => { api<User>("/api/v1/auth/me").then(setUser).catch(() => undefined).finally(() => setChecking(false)); }, []);
-  if (checking) return <div className="app-loading" role="status"><img src="/brand-mark.png" alt="" width="512" height="512" /><span>Memuat AquaNusa…</span></div>;
-  if (!user) return <Login onLogin={setUser} />;
-  return <Dashboard user={user} onLogout={() => api<void>("/api/v1/auth/logout", { method: "POST" }).finally(() => setUser(null))} />;
+  const content = checking ? <div className="app-loading" role="status"><img src="/brand-mark.png" alt="" width="512" height="512" /><span>Memuat AquaNusa…</span></div> : !user ? <Login onLogin={setUser} /> : <Dashboard user={user} onLogout={() => api<void>("/api/v1/auth/logout", { method: "POST" }).finally(() => setUser(null))} />;
+  return <>{content}<InstallBanner />{showSplash && <Splash onDone={() => setShowSplash(false)} />}</>;
 }
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) navigator.serviceWorker.register("/sw.js");

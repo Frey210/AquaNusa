@@ -34,6 +34,7 @@ def test_auth_roles_and_device_access(tmp_path, monkeypatch):
         thresholds["ph_max"] = 7.0
         thresholds.pop("device_uid")
         assert user.put("/api/v1/devices/AQUANUSA-001/thresholds", json=thresholds).status_code == 200
+        assert user.put("/api/v1/notifications/push-token", json={"token": "browser-token-for-test"}).status_code == 204
         assert user.get("/api/v1/devices/AQUANUSA-002/thresholds").status_code == 403
         assert user.get("/api/v1/devices/AQUANUSA-002/export.csv").status_code == 403
 

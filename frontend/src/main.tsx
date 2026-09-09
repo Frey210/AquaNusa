@@ -6,6 +6,7 @@ import {
   Thermometer, UserCircle, Waves, WifiHigh, WifiSlash,
 } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
+import { requestPushToken } from "./firebase";
 import "./styles.css";
 
 type User = { id: number; name: string; email: string; role: "admin" | "user" };
@@ -70,6 +71,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [selected, setSelected] = useState(""), [history, setHistory] = useState<Reading[]>([]);
   const [hours, setHours] = useState(24), [threshold, setThreshold] = useState<Threshold | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]), [message, setMessage] = useState(""), [error, setError] = useState("");
+  const [pushEnabled, setPushEnabled] = useState(typeof Notification !== "undefined" && Notification.permission === "granted");
 
   useEffect(() => window.scrollTo(0, 0), []);
 
@@ -108,6 +110,14 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     await api<void>(id ? `/api/v1/notifications/${id}/read` : "/api/v1/notifications/read-all", { method: "POST" });
     setAlerts((items) => items.map((item) => !id || item.id === id ? { ...item, read: true } : item));
   }
+  async function enablePush() {
+    try {
+      const token = await requestPushToken();
+      if (!token) throw new Error("Token notifikasi tidak tersedia");
+      await api<void>("/api/v1/notifications/push-token", { method: "PUT", body: JSON.stringify({ token }) });
+      setPushEnabled(true); setMessage("Push notification aktif pada perangkat ini."); setError("");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Gagal mengaktifkan push notification"); }
+  }
 
   const titles: Record<View, string> = { monitor: "Kondisi perairan, dalam satu pandangan.", history: "Riwayat data sensor.", thresholds: "Ambang batas perangkat.", notifications: "Log notifikasi sensor." };
   const nav: { id: View; label: string; icon: Icon }[] = [
@@ -122,7 +132,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
       {view === "monitor" && (!latest ? <Empty hasDevice={devices.length > 0} admin={user.role === "admin"} /> : <><section className="status-strip" aria-label="Ringkasan status"><div className={`live ${device?.online ? "online" : "offline"}`}>{device?.online ? <WifiHigh size={20} aria-hidden="true" /> : <WifiSlash size={20} aria-hidden="true" />}<span><strong>{device?.online ? "Perangkat online" : "Perangkat offline"}</strong>Terakhir diperbarui {lastUpdate}</span></div><div><MapPin size={20} aria-hidden="true" /><span><strong>{device?.name || device?.uid}</strong>Unit pemantauan aktif</span></div><div className={healthy ? "quality-good" : "quality-watch"}><Leaf size={20} aria-hidden="true" /><span><strong>{healthy ? "Kondisi stabil" : "Perlu perhatian"}</strong>Berdasarkan ambang pH dan DO</span></div></section><section className="metric-grid" aria-label="Pembacaan sensor terkini">{metrics.map(({ key, label, unit, icon: MetricIcon, tone }) => <article className={`metric-card ${tone}`} key={key}><div className="metric-head"><span>{label}</span><MetricIcon size={22} aria-hidden="true" /></div><div className="metric-value">{formatValue(latest[key], key)}<small>{unit}</small></div><Sparkline data={history} field={key} /></article>)}</section><section className="insight"><div><p className="eyebrow">Ringkasan 24 jam</p><h2>Air memberi sinyal. AquaNusa membuatnya terbaca.</h2><p>Grafik kecil pada setiap kartu merangkum pembacaan terakhir tanpa membebani koneksi seluler.</p></div><div className="insight-stat"><span>{history.length}</span><small>sampel tersimpan</small></div></section></>)}
       {view === "history" && <section className="panel"><div className="panel-tools"><label>Rentang data<select value={hours} onChange={(event) => setHours(Number(event.target.value))}><option value={24}>24 jam</option><option value={72}>3 hari</option><option value={168}>7 hari</option></select></label><button className="primary" onClick={exportCsv} disabled={!history.length}><DownloadSimple size={20} /> Ekspor CSV</button></div><p className="panel-caption">{history.length} pembacaan · data terbaru ditampilkan lebih dahulu</p><div className="table-wrap"><table><thead><tr><th>Waktu</th>{metrics.map((metric) => <th key={metric.key}>{metric.label}<small>{metric.unit}</small></th>)}</tr></thead><tbody>{[...history].reverse().map((row) => <tr key={row.id}><td>{formatDate(row.recorded_at)}</td>{metrics.map((metric) => <td key={metric.key}>{formatValue(row[metric.key], metric.key)}</td>)}</tr>)}</tbody></table>{!history.length && <p className="empty-row">Belum ada data pada rentang ini.</p>}</div></section>}
       {view === "thresholds" && <section className="panel"><p className="panel-caption">Notifikasi dibuat saat nilai pertama kali melewati batas dan aktif kembali setelah kondisi normal.</p>{threshold && <form className="threshold-form" onSubmit={saveThreshold}>{metrics.map(({ key, label, unit, icon: MetricIcon, step }) => <fieldset key={key}><legend><MetricIcon size={21} aria-hidden="true" />{label} <small>{unit}</small></legend><label>Minimum<input type="number" step={step} value={threshold[`${key}_min`]} onChange={(event) => setThreshold({ ...threshold, [`${key}_min`]: Number(event.target.value) })} required /></label><label>Maksimum<input type="number" step={step} value={threshold[`${key}_max`]} onChange={(event) => setThreshold({ ...threshold, [`${key}_max`]: Number(event.target.value) })} required /></label></fieldset>)}<button className="primary save" type="submit"><CheckCircle size={20} /> Simpan ambang batas</button></form>}</section>}
-      {view === "notifications" && <section className="panel"><div className="panel-tools"><p className="panel-caption">{unread} belum dibaca · {alerts.length} notifikasi terakhir</p><button className="secondary" onClick={() => markRead()} disabled={!unread}><CheckCircle size={20} /> Tandai semua dibaca</button></div><div className="alert-list">{alerts.map((alert) => <article key={alert.id} className={alert.read ? "read" : ""}><span className={`alert-mark ${alert.direction}`}><Bell size={20} aria-hidden="true" /></span><div><strong>{alert.device_uid} · {metrics.find((metric) => metric.key === alert.parameter)?.label || alert.parameter}</strong><p>{alert.message}</p><small>{formatDate(alert.created_at)}</small></div>{!alert.read && <button onClick={() => markRead(alert.id)}>Tandai dibaca</button>}</article>)}{!alerts.length && <p className="empty-row">Belum ada notifikasi sensor.</p>}</div></section>}
+      {view === "notifications" && <section className="panel"><div className="panel-tools"><p className="panel-caption">{unread} belum dibaca · {alerts.length} notifikasi terakhir</p><div className="tool-actions"><button className="secondary" onClick={enablePush} disabled={pushEnabled}><Bell size={20} /> {pushEnabled ? "Push aktif" : "Aktifkan push"}</button><button className="secondary" onClick={() => markRead()} disabled={!unread}><CheckCircle size={20} /> Tandai semua dibaca</button></div></div><div className="alert-list">{alerts.map((alert) => <article key={alert.id} className={alert.read ? "read" : ""}><span className={`alert-mark ${alert.direction}`}><Bell size={20} aria-hidden="true" /></span><div><strong>{alert.device_uid} · {metrics.find((metric) => metric.key === alert.parameter)?.label || alert.parameter}</strong><p>{alert.message}</p><small>{formatDate(alert.created_at)}</small></div>{!alert.read && <button onClick={() => markRead(alert.id)}>Tandai dibaca</button>}</article>)}{!alerts.length && <p className="empty-row">Belum ada notifikasi sensor.</p>}</div></section>}
       <footer>© {new Date().getFullYear()} AquaNusa · Aerasea</footer>
     </main>
   </div>;

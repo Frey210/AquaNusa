@@ -3,13 +3,14 @@ import base64
 import csv
 import hashlib
 import io
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,6 +26,8 @@ SESSION_HOURS = 24 * 30
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
 INITIAL_DEVICE_UID = os.getenv("INITIAL_DEVICE_UID", "AQUANUSA-001")
 INITIAL_USER_EMAIL = os.getenv("AQUANUSA_USER_EMAIL", "").lower()
+FIREBASE_CREDENTIALS = os.getenv("FIREBASE_CREDENTIALS", "")
+logger = logging.getLogger("aquanusa")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
@@ -61,6 +64,12 @@ class DeviceAccess(Base):
     __tablename__ = "device_access"
     device_uid: Mapped[str] = mapped_column(ForeignKey("devices.uid"), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+
+
+class PushToken(Base):
+    __tablename__ = "push_tokens"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    token: Mapped[str] = mapped_column(String(4096), unique=True)
 
 
 class Reading(Base):
@@ -191,6 +200,10 @@ class NotificationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PushTokenIn(BaseModel):
+    token: str = Field(min_length=10, max_length=4096)
+
+
 SENSOR_LABELS = {
     "water_temp_c": "suhu air", "air_temp_c": "suhu udara", "do_mg_l": "DO",
     "ph": "pH", "humidity_rh": "kelembapan", "illuminance_lux": "illuminance",
@@ -281,7 +294,20 @@ def get_threshold(db: Session, uid: str) -> Threshold:
     return threshold
 
 
-def evaluate_alerts(db: Session, payload: TelemetryIn, now: datetime):
+def send_push(token: str, title: str, body: str, data: dict[str, str]):
+    if not FIREBASE_CREDENTIALS or not os.path.isfile(FIREBASE_CREDENTIALS):
+        return
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, messaging
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(credentials.Certificate(FIREBASE_CREDENTIALS))
+        messaging.send(messaging.Message(notification=messaging.Notification(title=title, body=body), data=data, token=token))
+    except Exception as error:
+        logger.warning("Push notification failed: %s", error)
+
+
+def evaluate_alerts(db: Session, payload: TelemetryIn, now: datetime, background_tasks: BackgroundTasks):
     threshold = get_threshold(db, payload.uid)
     for parameter, label in SENSOR_LABELS.items():
         value = getattr(payload, parameter)
@@ -294,10 +320,13 @@ def evaluate_alerts(db: Session, payload: TelemetryIn, now: datetime):
             continue
         limit = minimum if direction == "low" else maximum
         if not state or state.direction != direction:
+            message = f"{label} {value:g} melewati batas {'minimum' if direction == 'low' else 'maksimum'} {limit:g}"
             db.add(Notification(device_uid=payload.uid, parameter=parameter, direction=direction,
                                 value=value, threshold=limit,
-                                message=f"{label} {value:g} melewati batas {'minimum' if direction == 'low' else 'maksimum'} {limit:g}",
+                                message=message,
                                 created_at=now))
+            for push_token in db.scalars(select(PushToken).join(User).where((User.role == "admin") | User.id.in_(select(DeviceAccess.user_id).where(DeviceAccess.device_uid == payload.uid)))):
+                background_tasks.add_task(send_push, push_token.token, f"Peringatan {payload.uid}", message, {"device_uid": payload.uid, "parameter": parameter})
             if state:
                 state.direction = direction
             else:
@@ -345,7 +374,7 @@ def health():
 
 
 @app.post("/api/v1/telemetry", response_model=ReadingOut, status_code=201, dependencies=[Depends(require_device_key)])
-def create_telemetry(payload: TelemetryIn, db: Annotated[Session, Depends(get_db)]):
+def create_telemetry(payload: TelemetryIn, background_tasks: BackgroundTasks, db: Annotated[Session, Depends(get_db)]):
     now = datetime.now(timezone.utc)
     device = db.get(Device, payload.uid)
     if not device:
@@ -357,7 +386,7 @@ def create_telemetry(payload: TelemetryIn, db: Annotated[Session, Depends(get_db
     device.last_seen = now
     reading = Reading(**payload.model_dump(exclude={"uid"}), device_uid=payload.uid, recorded_at=now)
     db.add(reading)
-    evaluate_alerts(db, payload, now)
+    evaluate_alerts(db, payload, now, background_tasks)
     db.commit()
     db.refresh(reading)
     return reading_out(payload.uid, reading)
@@ -466,6 +495,19 @@ def list_notifications(db: Annotated[Session, Depends(get_db)], user: Annotated[
     if user.role != "admin":
         query = query.join(DeviceAccess, DeviceAccess.device_uid == Notification.device_uid).where(DeviceAccess.user_id == user.id)
     return [notification_out(notification) for notification in db.scalars(query).all()]
+
+
+@app.put("/api/v1/notifications/push-token", status_code=204)
+def update_push_token(payload: PushTokenIn, db: Annotated[Session, Depends(get_db)], user: Annotated[User, Depends(get_current_user)]):
+    duplicate = db.scalar(select(PushToken).where(PushToken.token == payload.token, PushToken.user_id != user.id))
+    if duplicate:
+        db.delete(duplicate)
+    token = db.get(PushToken, user.id)
+    if token:
+        token.token = payload.token
+    else:
+        db.add(PushToken(user_id=user.id, token=payload.token))
+    db.commit()
 
 
 @app.post("/api/v1/notifications/read-all", status_code=204)

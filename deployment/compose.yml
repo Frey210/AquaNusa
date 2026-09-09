@@ -16,8 +16,10 @@ services:
       AQUANUSA_USER_NAME: ${AQUANUSA_USER_NAME}
       AQUANUSA_USER_EMAIL: ${AQUANUSA_USER_EMAIL}
       AQUANUSA_USER_PASSWORD: ${AQUANUSA_USER_PASSWORD}
+      FIREBASE_CREDENTIALS: /run/secrets/firebase-admin.json
     volumes:
       - aquanusa-data:/data
+      - ./secrets/firebase-admin.json:/run/secrets/firebase-admin.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s

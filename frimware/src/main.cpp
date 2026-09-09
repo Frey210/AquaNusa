@@ -76,6 +76,7 @@ constexpr float PH_SCALE = 1.0f, PH_OFFSET = 0.0f;
 constexpr float DO_SCALE = 1.0f, DO_OFFSET = 0.0f;
 constexpr float WATER_TEMP_OFFSET = 0.0f, AIR_TEMP_OFFSET = 0.0f;
 constexpr float HUMIDITY_OFFSET = 0.0f, LUX_SCALE = 1.0f;
+constexpr bool LUX_LOW_WORD_FIRST = true;
 
 // Server & Identitas
 #ifndef AQUANUSA_API_URL
@@ -488,10 +489,14 @@ bool readEnvironment(float& airTemp, float& humidity, float& lux){
 
   humidity = mb_env.getResponseBuffer(0) * 0.1f + HUMIDITY_OFFSET;
   airTemp = static_cast<int16_t>(mb_env.getResponseBuffer(1)) * 0.1f + AIR_TEMP_OFFSET;
-  lux = ((static_cast<uint32_t>(mb_env.getResponseBuffer(2)) << 16) |
-         mb_env.getResponseBuffer(3)) * LUX_SCALE;
+  const uint16_t first = mb_env.getResponseBuffer(2);
+  const uint16_t second = mb_env.getResponseBuffer(3);
+  lux = (LUX_LOW_WORD_FIRST
+           ? ((static_cast<uint32_t>(second) << 16) | first)
+           : ((static_cast<uint32_t>(first) << 16) | second)) * LUX_SCALE;
   return isfinite(airTemp) && isfinite(humidity) && isfinite(lux) &&
-         airTemp >= -40.0f && airTemp <= 85.0f && humidity >= 0.0f && humidity <= 100.0f;
+         airTemp >= -40.0f && airTemp <= 85.0f && humidity >= 0.0f && humidity <= 100.0f &&
+         lux >= 0.0f && lux <= 200000.0f;
 }
 
 bool readDO(float& do_mg, float& tC){
@@ -543,22 +548,22 @@ static void readOneModularSensor(DisplayData& cur, uint8_t& phase){
 
   switch (phase){
     case 0:
-      if (readPH(temp, value1)){
+      cur.ph_ok = readPH(temp, value1);
+      if (cur.ph_ok){
         cur.ph = value1 * PH_SCALE + PH_OFFSET;
         cur.phT = temp;
-        cur.ph_ok = true;
       }
       break;
     case 1:
-      if (readDO(value1, temp)){
+      cur.do_ok = readDO(value1, temp);
+      if (cur.do_ok){
         cur.do_mgL = value1 * DO_SCALE + DO_OFFSET;
         cur.do_tC = temp;
-        cur.do_ok = true;
       }
       break;
     case 2:
     default:
-      if (readEnvironment(cur.air_temp, cur.humidity, cur.lux)) cur.env_ok = true;
+      cur.env_ok = readEnvironment(cur.air_temp, cur.humidity, cur.lux);
       break;
   }
 

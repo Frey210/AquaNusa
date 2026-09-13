@@ -50,6 +50,7 @@ def test_auth_roles_and_device_access(tmp_path, monkeypatch):
             assert user.post("/api/v1/telemetry", json=high_ph, headers={"X-Device-Key": "test-key"}).status_code == 201
         notifications = user.get("/api/v1/notifications").json()
         assert len([item for item in notifications if item["parameter"] == "ph"]) == 1
+        assert notifications[0]["message"] == "pH: 8, di atas batas maksimum 7."
         assert notifications[0]["created_at"].endswith("Z")
         assert user.post(f"/api/v1/notifications/{notifications[0]['id']}/read").status_code == 204
         assert user.get("/api/v1/notifications").json()[0]["read"] is True
@@ -68,3 +69,25 @@ def test_auth_roles_and_device_access(tmp_path, monkeypatch):
     with TestClient(main.app) as rotated:
         assert rotated.post("/api/v1/auth/login", json={"email": "admin@example.test", "password": "Admin-password-123!"}).status_code == 401
         assert rotated.post("/api/v1/auth/login", json={"email": "admin@example.test", "password": "New-admin-password-456!"}).status_code == 200
+
+
+def test_web_push_has_clear_content_and_branding(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'push.db'}")
+    import app.main
+    main = importlib.reload(app.main)
+
+    import firebase_admin
+    from firebase_admin import messaging
+    sent = []
+    monkeypatch.setattr(main, "FIREBASE_CREDENTIALS", str(tmp_path / "firebase.json"))
+    (tmp_path / "firebase.json").write_text("{}")
+    monkeypatch.setattr(firebase_admin, "_apps", {"test": object()})
+    monkeypatch.setattr(messaging, "send", sent.append)
+
+    main.send_push("browser-token", "AQUANUSA-001 · pH tinggi", "pH: 8, di atas batas maksimum 7.",
+                   {"device_uid": "AQUANUSA-001", "parameter": "ph", "direction": "high"})
+    push = sent[0].webpush
+    assert (push.notification.title, push.notification.body) == (
+        "AQUANUSA-001 · pH tinggi", "pH: 8, di atas batas maksimum 7.")
+    assert push.notification.icon.endswith("/icons/icon-192.png")
+    assert push.notification.tag == "AQUANUSA-001-ph-high"

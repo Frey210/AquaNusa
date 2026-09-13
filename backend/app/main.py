@@ -27,6 +27,7 @@ COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() == "true"
 INITIAL_DEVICE_UID = os.getenv("INITIAL_DEVICE_UID", "AQUANUSA-001")
 INITIAL_USER_EMAIL = os.getenv("AQUANUSA_USER_EMAIL", "").lower()
 FIREBASE_CREDENTIALS = os.getenv("FIREBASE_CREDENTIALS", "")
+PUBLIC_ORIGIN = os.getenv("PUBLIC_ORIGIN", "http://localhost:5173").rstrip("/")
 logger = logging.getLogger("aquanusa")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {})
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
@@ -205,8 +206,12 @@ class PushTokenIn(BaseModel):
 
 
 SENSOR_LABELS = {
-    "water_temp_c": "suhu air", "air_temp_c": "suhu udara", "do_mg_l": "DO",
-    "ph": "pH", "humidity_rh": "kelembapan", "illuminance_lux": "illuminance",
+    "water_temp_c": "Suhu air", "air_temp_c": "Suhu udara", "do_mg_l": "Oksigen terlarut (DO)",
+    "ph": "pH", "humidity_rh": "Kelembapan", "illuminance_lux": "Illuminance",
+}
+SENSOR_UNITS = {
+    "water_temp_c": "°C", "air_temp_c": "°C", "do_mg_l": "mg/L",
+    "ph": "", "humidity_rh": "%RH", "illuminance_lux": "Lux",
 }
 
 
@@ -302,7 +307,22 @@ def send_push(token: str, title: str, body: str, data: dict[str, str]):
         from firebase_admin import credentials, messaging
         if not firebase_admin._apps:
             firebase_admin.initialize_app(credentials.Certificate(FIREBASE_CREDENTIALS))
-        messaging.send(messaging.Message(notification=messaging.Notification(title=title, body=body), data=data, token=token))
+        messaging.send(messaging.Message(
+            data=data,
+            token=token,
+            webpush=messaging.WebpushConfig(
+                headers={"Urgency": "high"},
+                notification=messaging.WebpushNotification(
+                    title=title,
+                    body=body,
+                    icon=f"{PUBLIC_ORIGIN}/icons/icon-192.png",
+                    badge=f"{PUBLIC_ORIGIN}/icons/icon-192.png",
+                    tag=f"{data['device_uid']}-{data['parameter']}-{data['direction']}",
+                    renotify=True,
+                ),
+                fcm_options=messaging.WebpushFCMOptions(link=f"{PUBLIC_ORIGIN}/"),
+            ),
+        ))
     except Exception as error:
         logger.warning("Push notification failed: %s", error)
 
@@ -320,13 +340,23 @@ def evaluate_alerts(db: Session, payload: TelemetryIn, now: datetime, background
             continue
         limit = minimum if direction == "low" else maximum
         if not state or state.direction != direction:
-            message = f"{label} {value:g} melewati batas {'minimum' if direction == 'low' else 'maksimum'} {limit:g}"
+            unit = SENSOR_UNITS[parameter]
+            value_text = f"{value:g} {unit}".strip()
+            limit_text = f"{limit:g} {unit}".strip()
+            boundary = "di bawah batas minimum" if direction == "low" else "di atas batas maksimum"
+            message = f"{label}: {value_text}, {boundary} {limit_text}."
             db.add(Notification(device_uid=payload.uid, parameter=parameter, direction=direction,
                                 value=value, threshold=limit,
                                 message=message,
                                 created_at=now))
             for push_token in db.scalars(select(PushToken).join(User).where((User.role == "admin") | User.id.in_(select(DeviceAccess.user_id).where(DeviceAccess.device_uid == payload.uid)))):
-                background_tasks.add_task(send_push, push_token.token, f"Peringatan {payload.uid}", message, {"device_uid": payload.uid, "parameter": parameter})
+                background_tasks.add_task(
+                    send_push,
+                    push_token.token,
+                    f"{payload.uid} · {label} {'rendah' if direction == 'low' else 'tinggi'}",
+                    message,
+                    {"device_uid": payload.uid, "parameter": parameter, "direction": direction},
+                )
             if state:
                 state.direction = direction
             else:
